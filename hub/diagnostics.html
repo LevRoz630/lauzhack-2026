@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Diagnostics</title>
+<style>
+  body { font: 18px system-ui, sans-serif; background: #0d1117; color: #e6edf3; margin: 32px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 28px; }
+  .chip { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 10px 16px; min-width: 110px; }
+  .chip b { display: block; font-size: 26px; } .chip span { color: #8b949e; font-size: 14px; }
+  #log { font: 14px monospace; color: #9da7b3; white-space: pre; margin-top: 24px; }
+</style>
+<div class="row" id="chips"></div>
+<h3 style="margin:28px 0 8px">Last hour</h3>
+<div id="strip" style="display:flex;height:34px;border-radius:8px;overflow:hidden;background:#161b22;max-width:900px"></div>
+<div id="trend" style="margin-top:10px;color:#9da7b3;font-size:16px"></div>
+<div id="log"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+let last = '', lines = [];
+function chip(label, value) { return `<div class="chip"><b>${value ?? '–'}</b><span>${label}</span></div>`; }
+function render(m) {
+  const u = m.user || {}, f = u.features || {}, ex = (u.desk || {}).examples || {};
+  $('chips').innerHTML = chip('faces', f.faces) + chip('idle seconds', f.idle_s) + chip('head turn', f.yaw) + chip('head tilt', f.pitch) + chip('distance', f.lean) + chip('lip movement', f.lip_move) + chip('idle timer misses', u.idle_misfires ?? 0) + chip('model tokens', u.model_tokens ?? 0) + chip('phone examples', ex.phone || 0);
+  const key = u.state + '|' + u.reason;
+  if (key !== last) { last = key; lines.unshift(`${new Date().toLocaleTimeString()}  ${u.state}  ${u.reason}`); lines = lines.slice(0, 8); $('log').textContent = lines.join('\n'); }
+}
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type === 'sessions') render(m); };
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+const KIND = { typing: '#1f6feb', reading: '#58a6ff', thinking: '#a371f7', free: '#d29922', shoulder: '#db6d28', away: '#30363d', distracted: '#f85149' };
+async function trend() {
+  try {
+    const t = await (await fetch('/timeline?minutes=60')).json(), span = t.now - t.start;
+    $('strip').innerHTML = t.segments.map((s) => `<div title="${s.kind}" style="width:${(100 * (s.t1 - s.t0) / span).toFixed(3)}%;margin-left:0;background:${KIND[s.kind] || '#444'}"></div>`).join('');
+    const first = t.segments.length ? (t.segments[0].t0 - t.start) / span : 1;
+    if (t.segments.length) $('strip').firstChild.style.marginLeft = (100 * first).toFixed(3) + '%';
+    $('trend').innerHTML = Object.entries(t.minutes).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<span style="color:${KIND[k]}">■</span> ${k} ${v} min`).join(' &nbsp; ')
+      + `<br>longest focus ${t.longest_focus_min} min · distractions ${t.distractions}`;
+  } catch (e) {}
+}
+trend(); setInterval(trend, 10000);
+connect();
+</script>

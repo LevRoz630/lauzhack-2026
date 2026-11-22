@@ -1,0 +1,412 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Keypad</title>
+<style>
+  body { font: 16px system-ui, sans-serif; background: #111; color: #eee; margin: 24px; }
+  #pad { display: grid; grid-template-columns: repeat(3, 118px); gap: 14px; margin: 18px 0; }
+  #pad canvas { border-radius: 14px; cursor: pointer; background: #000; }
+  button { font-size: 16px; padding: 8px 14px; }
+  #status { color: #aaa; margin-left: 12px; }
+</style>
+<h2>Keypad</h2>
+<button id="connect">Connect keypad</button><span id="status">not connected: the grid below works with the mouse</span>
+<div id="pad"></div>
+<script type="module">
+import { MXCreativeConsoleClient } from '/vendor/mxCreativeConsole.js';
+
+const SIZE = 118;
+const WAITING = '#e6a100';
+const TIER = { amber: '#e6a100', red: '#d33a3a' };
+const QS = new URLSearchParams(location.search);
+const PREVIEW = QS.get('preview') === '1', FORCE_STATE = PREVIEW ? QS.get('state') : null;   // preview: look at a view without owning the keypad
+const statusEl = document.getElementById('status');
+const pad = document.getElementById('pad');
+
+// ---- nine canvases, mirrored to the device --------------------------------
+const keys = [];
+for (let k = 1; k <= 9; k++) {
+  const c = document.createElement('canvas'); c.width = c.height = SIZE;
+  c.onmousedown = () => keyDown(k); c.onmouseup = () => keyUp(k); c.onmouseleave = () => { if (down[k]) keyUp(k); };
+  pad.append(c); keys[k] = { canvas: c, ctx: c.getContext('2d'), sig: '' };
+}
+
+const client = PREVIEW ? { on() {} } : new MXCreativeConsoleClient({ debug: false });
+let connected = false, queue = Promise.resolve();
+function upload(k) {
+  if (!connected) return;
+  queue = queue.then(() => new Promise((res) => keys[k].canvas.toBlob(async (b) => {
+    try { await client.uploadContextualDisplayImage(new File([b], `k${k}.png`, { type: 'image/png' }), { mode: 'single', keyNumber: k }); } catch (e) { console.warn(e); }
+    res();
+  }, 'image/png')));
+  return queue;
+}
+
+function fit(ctx, text, max) { while (text.length > 1 && ctx.measureText(text).width > max) text = text.slice(0, -1); return text; }
+
+function draw(k, spec, image) {
+  const sig = JSON.stringify(spec);
+  if (keys[k].sig === sig) return;
+  keys[k].sig = sig;
+  const x = keys[k].ctx;
+  x.globalAlpha = 1; x.fillStyle = spec.bg || '#0b0d10'; x.fillRect(0, 0, SIZE, SIZE);
+  if (spec.tile) { x.drawImage(spec.tile.canvas(), spec.tile.col * SIZE, spec.tile.row * SIZE, SIZE, SIZE, 0, 0, SIZE, SIZE); return upload(k); }
+  if (image) {      // fill the key with the centre of the photo, darkened at the bottom for the label
+    const side = Math.min(image.width, image.height);
+    x.drawImage(image, (image.width - side) / 2, (image.height - side) / 2, side, side, 0, 0, SIZE, SIZE);
+    x.fillStyle = 'rgba(0,0,0,0.55)'; x.fillRect(0, 84, SIZE, 34);
+  }
+  if (spec.band) { x.fillStyle = spec.band; x.fillRect(0, 0, SIZE, 16); }
+  if (spec.border) { x.strokeStyle = spec.border; x.lineWidth = 8; x.strokeRect(4, 4, SIZE - 8, SIZE - 8); }
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  if (spec.big != null) {
+    x.fillStyle = spec.bigColor || '#fff'; x.font = `bold ${spec.bigSize || 50}px system-ui, sans-serif`;
+    const text = String(spec.big), cut = text.lastIndexOf(' ');
+    if (spec.wrap && cut > 0 && x.measureText(text).width > SIZE - 16) {
+      x.fillText(fit(x, text.slice(0, cut), SIZE - 16), SIZE / 2, 42); x.fillText(fit(x, text.slice(cut + 1), SIZE - 16), SIZE / 2, 66);
+    } else x.fillText(fit(x, text, SIZE - 12), SIZE / 2, spec.wrap ? 54 : 60);
+  }
+  if (spec.label) { x.fillStyle = '#fff'; x.font = 'bold 17px system-ui, sans-serif'; x.fillText(fit(x, spec.label, SIZE - 12), SIZE / 2, 100); }
+  upload(k);
+}
+
+// ---- hub connection -------------------------------------------------------
+let ws, sessions = [], user = { state: 'unknown', reason: '' }, pageVersion = null;
+function connectWs() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'sessions') { if (pageVersion && m.page_v !== pageVersion) return location.reload(); pageVersion = m.page_v; sessions = m.sessions; user = m.user || user; if (FORCE_STATE) user = { ...user, state: FORCE_STATE }; render(); }
+    else if (m.type === 'voice') { heard = { text: m.text || `(${m.note || 'nothing heard'})`, until: performance.now() + 4000 }; render(); setTimeout(render, 4100); }
+  };
+  ws.onclose = () => setTimeout(connectWs, 1000);
+}
+function send(obj) { if (!PREVIEW && ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+// ---- views ----------------------------------------------------------------
+// Exactly one view owns all nine keys at a time. Each view draws every key and handles every press.
+//   game    the break game owns the keys        away    the Swiss flag, while you are away
+//   focus   concentrating: keys of the app in front   agents  free: one key per agent
+//   agent   one agent is selected: act on it
+const LAUNCH = [['notes', '📝', 'notes'], ['claude', '✳', 'Claude'], ['search', '🔎', 'search'], ['agent', '＋', 'new agent']];
+const TALK = { talk: true, big: '🎙', label: 'talk' };
+const PAGE = { page: true };      // photograph a page held to the camera
+const PASTE = { paste: true };    // paste the last photo; blank until there is one
+const APP_SCREENS = {
+  claude: [TALK, { key: 'interrupt', big: '■', label: 'stop' }, { url: 'claude', big: '＋', label: 'new chat' }, PAGE, PASTE],
+  search: [{ ...TALK, label: 'ask' }, { key: 'new_tab', big: '＋', label: 'new tab' }, { key: 'back', big: '←', label: 'back' }, PAGE, PASTE],
+  notes: [{ ...TALK, label: 'dictate' }, { key: 'enter', big: '↵', label: 'new line' }, { key: 'new_note', big: '＋', label: 'new note' },
+          { key: 'search_notes', big: '🔎', label: 'search' }, PAGE, PASTE],
+  agent: [{ ...TALK, label: 'tell it' }, { key: 'interrupt', big: '■', label: 'stop' }, PAGE, PASTE],
+};
+let pageArmed = 0, pageLive = null, pageShot = null, pageShotT = 0;      // armed since (ms), keep-alive timer, thumbnail and time of the last page photo
+const PAGE_ARM_MS = 30000, PAGE_KEEPALIVE_MS = 2000;
+const PAGE_FRESH_S = 600;
+function pageReady() { return user.page_t && Date.now() / 1000 - user.page_t < PAGE_FRESH_S; }
+function pageDisarm() { pageArmed = 0; clearInterval(pageLive); pageLive = null; }
+function snapPage() {      // first tap: open the camera preview and keep it open; second tap: take the photo
+  if (pageArmed) { pageDisarm(); send({ type: 'snap' }); return; }
+  pageArmed = performance.now();
+  send({ type: 'page_live' });
+  pageLive = setInterval(() => {
+    if (performance.now() - pageArmed > PAGE_ARM_MS) { pageDisarm(); render(); return; }
+    send({ type: 'page_live' });
+  }, PAGE_KEEPALIVE_MS);
+}
+function drawPaste(n) {
+  if (!pageReady()) return draw(n, { big: '' });
+  if (pageShotT !== user.page_t) {      // a new photo: fetch its thumbnail once
+    pageShotT = user.page_t; pageShot = null;
+    const img = new Image();
+    img.onload = () => { pageShot = img; keys[n].sig = ''; render(); };
+    img.src = '/page.png?' + pageShotT;
+  }
+  draw(n, { img: pageShot ? pageShotT : 0, label: 'paste' }, pageShot);
+}
+let homeUntil = 0;
+let agentsHidden = false;      // set by the home key in the agents view
+const GLYPH = { working: '…', done: '■', failed: '✕' };      // a tick would look like the approve key
+const STATUS_COLOR = { working: '#7d8590', done: '#2e9e4f', failed: '#d33a3a' };
+const YOU = { focused: ['🎯', 'focused'], available: ['🙋', 'free'], shoulder: ['👥', 'shoulder'], away: ['🚪', 'away'], distracted: ['◌', 'distracted'], unknown: ['?', 'no camera'] };
+const PTT_MS = 450, SELECT_TIMEOUT_MS = 20000;
+let selected = null, selectedAt = 0;
+let talking = false, heard = null;
+let talkFresh = false;
+function hearing() { return heard && performance.now() < heard.until; }
+function HEARD() { return { bg: '#10203a', big: heard.text || '(nothing heard)', bigSize: 15, wrap: true, label: 'heard' }; }
+function PAGE_KEY() { return pageArmed ? { bg: '#3a2a05', big: '📷', label: 'capture' } : { big: '📷', label: 'page' }; }
+
+function isFree() { return user.state === 'available' || user.state === 'unknown'; }
+function picked() { return sessions.find((s) => s.id === selected) || null; }
+function deselect() { selected = null; }
+function view() {
+  if (user.game) return 'game';
+  if (user.state === 'away') return 'away';      // the flag, while you are away
+  if (selected && !picked()) { if (talking) { talking = false; send({ type: 'ptt', phase: 'cancel' }); } deselect(); }
+  if (selected && performance.now() - selectedAt > SELECT_TIMEOUT_MS && !talking && !pageArmed) deselect();
+  if (selected) return 'agent';
+  if (!isFree()) agentsHidden = false;      // the home key hides the agents only until you are next free
+  return isFree() && sessions.length && !agentsHidden ? 'agents' : 'focus';   // with no agents there is nothing to show, so keep the app's keys
+}
+
+function drawAgent(k, s, sel) {
+  if (!s) return draw(k, { big: '' });
+  const border = sel ? '#ffffff' : null, label = s.title || s.name;
+  if (s.held) draw(k, { band: WAITING, border: border || TIER[s.tier], big: s.held, bigColor: TIER[s.tier] || '#fff', label });
+  else if (s.status === 'needs you') draw(k, { band: WAITING, border: border || WAITING, big: '?', bigColor: WAITING, label });
+  else draw(k, { band: STATUS_COLOR[s.status], border, big: GLYPH[s.status], bigColor: STATUS_COLOR[s.status], label });
+}
+function drawBanner(s, tiles = 3, first = 4) {      // what the agent wants or is doing, across `tiles` keys starting at `first`
+  const text = s.held ? (s.want || '') : (s.title || s.name), words = text.split(/\s+/).filter(Boolean);
+  const per = Math.max(1, Math.ceil(words.length / tiles)), color = s.held ? (TIER[s.tier] || '#e6a100') : '#58a6ff';
+  for (let i = 0; i < tiles; i++) draw(first + i, { bg: '#10203a', big: words.slice(i * per, (i + 1) * per).join(' '), bigSize: 18, wrap: true, bigColor: color, label: i === 0 ? (s.held ? 'wants to' : 'task') : '' });
+}
+function drawReview() { draw(8, user.manual_left ? { bg: '#0d2a16', big: '☰', label: `review ${user.manual_left}s` } : { big: '☰', label: 'review work' }); }
+function drawYou() {
+  const you = YOU[user.state] || YOU.unknown;
+  if (user.state === 'shoulder') draw(9, { bg: '#3a2a05', big: '👥', label: 'ignore 5 min' });
+  else if (user.state === 'distracted' && user.nudge) draw(9, { bg: '#3a2a05', big: you[0], label: 'distracted' });
+  else draw(9, { big: you[0], label: you[1] });
+}
+
+// ---- away: the Swiss flag over all nine keys ----
+const FLAG = 3 * SIZE;      // 354: three keys, ignoring the gaps between them
+let flagCanvas = null;
+function flag() {
+  if (flagCanvas) return flagCanvas;
+  const c = document.createElement('canvas'); c.width = c.height = FLAG;
+  const x = c.getContext('2d'), u = FLAG / 32;      // the official flag is a 32-unit square; the cross arms are 20 long and 6 wide
+  x.fillStyle = '#DA291C'; x.fillRect(0, 0, FLAG, FLAG);
+  x.fillStyle = '#FFFFFF';
+  x.fillRect(6 * u, 13 * u, 20 * u, 6 * u);
+  x.fillRect(13 * u, 6 * u, 6 * u, 20 * u);
+  return (flagCanvas = c);
+}
+function drawAway() {
+  for (let k = 1; k <= 9; k++) draw(k, { tile: { canvas: flag, col: (k - 1) % 3, row: Math.floor((k - 1) / 3) } });
+}
+
+const VIEWS = {
+  focus: {
+    screen() {
+      const app = (user.front && user.front.app) || 'home';
+      return performance.now() < homeUntil ? 'home' : app;
+    },
+    keys() {
+      const scr = this.screen(), agent = scr === 'agent' ? sessions.find((s) => s.id === user.front.sid) : null;
+      const k = {};
+      if (scr === 'home') {
+        LAUNCH.forEach((t, i) => { k[i + 1] = { launch: t[0], big: t[1], label: t[2] }; });
+        k[5] = PAGE;
+        k[6] = { game: true, big: '🎮', label: 'break' };
+        k[7] = PASTE;
+      } else {
+        (APP_SCREENS[scr] || []).forEach((t, i) => { k[i + 1] = t; });
+        if (agent && agent.held) {
+          k[5] = agent.tier === 'red' ? { decide: 'allow', big: '⌨', label: 'terminal', bg: '#3a0d0d' } : { decide: 'allow', big: '✓', label: 'approve', bg: '#0d2a16', color: '#2e9e4f' };
+          k[6] = { decide: 'deny', big: '✕', label: 'deny', bg: '#3a0d0d', color: '#d33a3a' };
+        }
+        k[7] = { home: true, big: '⌂', label: 'home' };
+      }
+      return { k, agent };
+    },
+    render() {
+      const { k } = this.keys();
+      for (let n = 1; n <= 7; n++) {
+        const t = k[n];
+        if (!t) { draw(n, { big: '' }); continue; }
+        if (t.talk && talking) draw(n, { bg: '#3a0d0d', big: '🎙', label: 'listening' });
+        else if (t.talk && hearing()) draw(n, HEARD());
+        else if (t.page) draw(n, PAGE_KEY());
+        else if (t.paste) drawPaste(n);
+        else draw(n, { bg: t.bg || (t.talk ? '#10203a' : '#0b0d10'), big: t.big, bigColor: t.color, label: t.label });
+      }
+      drawReview(); drawYou();
+    },
+    down(n) {
+      const t = this.keys().k[n];
+      if (t && t.talk && !talking) { talking = true; talkFresh = true; send({ type: 'ptt', phase: 'start' }); }
+    },
+    up(n, heldMs, press) {
+      const { k, agent } = press.focus, t = k[n];
+      if (n === 8) { agentsHidden = false; return send({ type: 'manual' }); }
+      if (n === 9) { if (user.state === 'shoulder' || user.shoulder_off_left) send({ type: 'shoulder_off' }); return; }
+      if (!t) return;
+      if (t.talk) {   // held: stop on release. Tapped: keep listening until the next tap.
+        if (talkFresh && heldMs < PTT_MS) { talkFresh = false; return; }
+        talking = false; send({ type: 'ptt', phase: 'stop', purpose: 'type' });
+      }
+      else if (t.launch) { homeUntil = 0; send({ type: 'launch', app: t.launch }); }
+      else if (t.game) send({ type: 'open_game' });
+      else if (t.home) { homeUntil = performance.now() + 8000; send({ type: 'home' }); }      // also puts the app away on screen
+      else if (t.page) snapPage();
+      else if (t.paste) { if (pageReady()) send({ type: 'paste_page' }); }
+      else if (t.key) send({ type: 'app_key', action: t.key });
+      else if (t.url) send({ type: 'launch', app: t.url });
+      else if (t.decide && agent) send({ type: 'decide', id: agent.id, item: agent.held_id, behavior: t.decide });
+    },
+  },
+  agents: {
+    render() {
+      for (let k = 1; k <= 5; k++) drawAgent(k, sessions[k - 1], false);
+      draw(6, { bg: '#10203a', big: '≡', label: 'summary' });      // what every agent is doing, before you open one
+      if (hearing()) draw(7, HEARD());
+      else draw(7, { big: '⌂', label: 'home' });
+      drawReview(); drawYou();
+    },
+    up(k) {
+      if (k === 6) send({ type: 'summary' });
+      else if (k <= 5) { const s = sessions[k - 1]; if (s) { selected = s.id; selectedAt = performance.now(); send({ type: 'focus', id: s.id }); } }
+      else if (k === 7) {      // home: put the agents away and show the launchers
+        agentsHidden = true; homeUntil = performance.now() + 8000;
+        send({ type: 'hide_agents' });
+        if (user.manual_left) send({ type: 'manual' });
+      }
+      else if (k === 8) send({ type: 'manual' });
+      else if (k === 9 && (user.state === 'shoulder' || user.shoulder_off_left)) send({ type: 'shoulder_off' });
+    },
+  },
+  agent: {
+    render() {
+      const s = picked();
+      if (!s) return;
+      // The selected agent owns the pad: its tile, what it wants or is doing, then the keys you use in
+      // its terminal. The other agents are one press away, behind back.
+      drawAgent(1, s, true);
+      drawBanner(s, 2, 2);
+      draw(4, { big: '■', label: 'stop' });
+      draw(5, PAGE_KEY());
+      if (pageReady()) drawPaste(6); else draw(6, { big: '' });
+      if (hearing()) draw(7, HEARD());
+      else if (talking && !s.held) draw(7, { bg: '#3a0d0d', big: '🎙', label: 'listening' });
+      else if (!s.held && s.status === 'needs you') draw(7, { big: '⌨', label: 'in terminal' });      // it is on a prompt: no typing into it
+      else if (!s.held) draw(7, { bg: '#10203a', big: '🎙', label: 'hold to tell' });
+      else if (s.tier === 'red') draw(7, { bg: '#3a0d0d', big: '⌨', label: 'terminal' });
+      else draw(7, { bg: '#0d2a16', big: '✓', bigColor: '#2e9e4f', label: 'approve' });
+      if (s.held && talking) draw(8, { bg: '#3a0d0d', big: '🎙', label: 'say why' });      // listening shows on the key being held
+      else if (s.held) draw(8, { bg: '#3a0d0d', big: '✕', bigColor: '#d33a3a', label: 'deny / hold' });
+      else draw(8, { big: '' });
+      draw(9, { big: '↩', label: 'back' });
+    },
+    down(k) {
+      const s = picked();
+      if (s && ((k === 8 && s.held) || (k === 7 && !s.held))) { talking = true; send({ type: 'ptt', phase: 'start' }); }
+    },
+    up(k, heldMs, press) {
+      const s = press.agent, long = heldMs >= PTT_MS;      // the agent and its call as they were at key-down
+      selectedAt = performance.now();
+      if (k === 4) send({ type: 'app_key', action: 'interrupt' });      // Escape in its terminal
+      else if (k === 5) snapPage();
+      else if (k === 6) { if (pageReady()) send({ type: 'paste_page' }); }
+      else if (k <= 3) { /* its own tile and banner: nothing to do */ }
+      else if (k === 9 || !s) deselect();
+      else if (k === 7 && s.held) { send({ type: 'decide', id: s.id, item: s.held_id, behavior: 'allow' }); deselect(); }
+      else if (k === 7) { talking = false; send(long ? { type: 'ptt', phase: 'stop', id: s.id, purpose: 'tell' } : { type: 'ptt', phase: 'cancel' }); }
+      else if (k === 8 && s.held) {
+        talking = false;
+        if (long) send({ type: 'ptt', phase: 'stop', id: s.id, item: s.held_id, purpose: 'deny' });
+        else { send({ type: 'ptt', phase: 'cancel' }); send({ type: 'decide', id: s.id, item: s.held_id, behavior: 'deny' }); }
+        deselect();
+      }
+    },
+  },
+  away: { render() { drawAway(); }, up() {} },    // the flag over all nine keys; presses do nothing
+  game: { render() {}, up() {} },   // the game draws the keys and reads the presses itself while it runs
+};
+
+let lastView = '';
+const OWNS_ALL = new Set(['game', 'away']);      // views that draw every key themselves
+function render() {
+  const v = view();
+  if (OWNS_ALL.has(lastView) && v !== lastView) {      // take the keys back
+    for (let k = 1; k <= 9; k++) keys[k].sig = '';
+    // and once more shortly after: a last picture may still have been on its way to the keys
+    setTimeout(() => { if (!OWNS_ALL.has(view())) { for (let k = 1; k <= 9; k++) keys[k].sig = ''; render(); } }, 700);
+  }
+  // a talk recording started by a tap must not keep running once its key is gone
+  if (talking && v !== lastView && lastView) { talking = false; send({ type: 'ptt', phase: 'cancel' }); }
+  lastView = v;
+  VIEWS[v].render();
+}
+
+// ---- key presses ----------------------------------------------------------
+// A press is judged by what the key showed when it went down, never by what is there at release:
+// the screen can change in between (a call arrives, the app in front changes, the state flips).
+const down = {};
+function keyDown(k) {
+  send({ type: 'press' });      // tells the hub someone is at the keypad, even if the camera has lost the face
+  const name = view();
+  down[k] = { t: performance.now(), view: name, focus: name === 'focus' ? VIEWS.focus.keys() : null, agent: name === 'agent' ? picked() : null };
+  const v = VIEWS[name];
+  if (v.down) v.down(k);
+  render();
+}
+function keyUp(k, at = performance.now()) {
+  const press = down[k]; delete down[k];
+  if (!press) return;
+  VIEWS[press.view].up(k, at - press.t, press);
+  render();
+}
+// The device can report one physical press as two quick pulses. A release only counts once the key
+// has stayed up for DEBOUNCE_MS; a press that returns within that window is the same press.
+const DEBOUNCE_MS = 140;
+let active = new Set();
+const pendingUp = {};
+let arrows = new Set();      // the two arrow buttons under the keys: step through the open windows
+client.on('keypadKeysChanged', ({ activeLabels }) => {
+  const held = new Set((activeLabels || []).filter((l) => l === 'PREV' || l === 'NEXT'));
+  // while the break game runs it reads the arrows itself (they quit it), so they must not switch windows
+  for (const l of held) if (!arrows.has(l) && !user.game) { send({ type: 'press' }); send({ type: 'cycle', dir: l === 'NEXT' ? 1 : -1 }); }
+  arrows = held;
+  const now = new Set((activeLabels || []).map(Number).filter((n) => n >= 1 && n <= 9));
+  for (const k of now) if (!active.has(k)) {
+    if (pendingUp[k]) { clearTimeout(pendingUp[k]); delete pendingUp[k]; } else keyDown(k);
+  }
+  for (const k of active) if (!now.has(k)) {
+    const at = performance.now();       // the real release time; the timer below can fire late in a background tab
+    pendingUp[k] = setTimeout(() => { delete pendingUp[k]; keyUp(k, at); }, DEBOUNCE_MS);
+  }
+  active = now;
+});
+setInterval(render, 1000);
+
+// ---- device ---------------------------------------------------------------
+// Only one tab may drive the keypad. A second tab waits, so two pages never draw over each other.
+let owner = false;
+async function attach(ask) {
+  if (!owner) { statusEl.textContent = 'another tab is driving the keypad; close it to use this one'; return; }
+  try {
+    if (ask) await client.requestDeviceAccessAndScan(); else await client.scanAuthorizedDevices();
+    const kp = client.getAvailableDevices().find((d) => d.role === 'keypad');
+    if (!kp) { statusEl.textContent = ask ? 'no keypad found' : 'click Connect keypad'; return; }
+    await client.connectAvailableDevice(kp.index);
+    connected = true; statusEl.textContent = 'keypad connected';
+    for (let k = 1; k <= 9; k++) upload(k);
+  } catch (e) { statusEl.textContent = 'keypad error: ' + (e.message || e); }
+}
+document.getElementById('connect').onclick = () => attach(true);
+
+// The keypad sometimes drops off USB for a moment. Say so, and reconnect by itself when it is back.
+function isKeypad(device) { return device.vendorId === 0x046d && device.productId === 0xc354; }
+let retry = null;
+async function reattach() {
+  clearTimeout(retry);
+  if (connected || !owner) return;
+  try { await client.disconnectAll(); } catch (e) {}
+  await attach(false);
+  if (!connected) retry = setTimeout(reattach, 1500);
+}
+if (!PREVIEW) navigator.hid.addEventListener('disconnect', (e) => {
+  if (!isKeypad(e.device)) return;
+  connected = false; active = new Set();
+  statusEl.textContent = 'keypad disconnected, waiting for it to come back';
+});
+if (!PREVIEW) navigator.hid.addEventListener('connect', (e) => { if (isKeypad(e.device)) retry = setTimeout(reattach, 800); });
+client.on('roleDisconnected', ({ role }) => { if (role === 'keypad' && connected) { connected = false; statusEl.textContent = 'keypad disconnected, waiting for it to come back'; retry = setTimeout(reattach, 1500); } });
+
+connectWs(); render();
+if (PREVIEW) statusEl.textContent = 'preview: the keypad is not used';
+else {
+  statusEl.textContent = 'another tab is driving the keypad; close it to use this one';
+  navigator.locks.request('mx-keypad', () => { owner = true; attach(false); return new Promise(() => {}); });
+}
+</script>
