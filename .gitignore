@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+
+# downloaded models and the taught phone examples
+models/
+
+# local run state
+.hub_state.json
+logs/
+
+# personal notes
+research_notes/
+reports/
+.claude/

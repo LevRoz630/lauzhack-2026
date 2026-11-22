@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Live state</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { font: 18px system-ui, sans-serif; background: #0d1117; color: #e6edf3;
+         display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  #state { font-size: 104px; font-weight: 800; line-height: 1; text-transform: capitalize; }
+  #reason { font-size: 38px; color: #9da7b3; margin-top: 22px; }
+  .focused { color: #58a6ff; } .available { color: #3fb950; } .shoulder { color: #d29922; } .away { color: #8b949e; } .distracted { color: #f85149; } .unknown { color: #6e7681; }
+</style>
+<div id="state" class="unknown">…</div>
+<div id="reason"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data), u = m.user || {};
+    if (m.type !== 'sessions') return;
+    $('state').textContent = u.state; $('state').className = u.state;
+    $('reason').textContent = u.reason || '';
+  };
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+connect();
+</script>
