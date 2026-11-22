@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start Breakpoint: hub, camera detector with its watchdog, screen cover. Logs go to logs/.
-# Usage: bash scripts/start.sh            cover only while away (for a demo)
+# Usage: bash scripts/start.sh            cover the screen while away, never lock
 #        bash scripts/start.sh --lock     also lock the laptop after 5 s away
 #        bash scripts/start.sh --keep     keep the agents already on the keys (a restart mid-session)
 set -uo pipefail

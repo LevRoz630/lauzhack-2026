@@ -37,6 +37,7 @@ class Pad(SidePad):
             raise KeyboardInterrupt
         return event
 
+
 SCORE_FILE = Path.home() / ".local/share/keypad-games/whack_highscore"
 GRASS, DARK = (34, 110, 40), (15, 15, 15)
 BASE_POINTS = {"mole": 100, "gold": 300, "tough": 150, "jumper": 200}

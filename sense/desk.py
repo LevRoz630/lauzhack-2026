@@ -120,7 +120,7 @@ class Desk:
             np.savez(EXAMPLES, **{k: np.array(v) for k, v in self.examples.items() if v})
         if known in LABELS and now - self.auto_at >= AUTO_EVERY:
             # A rolling window: the oldest go, so the counterexamples always show the desk as it is now.
-            # Stale ones from an earlier camera position made everything look like the phone.
+            # Stale ones from an earlier camera position make everything look like the phone.
             self.examples[known].append(vec)
             del self.examples[known][:-AUTO_MAX]
             self.auto_at = now

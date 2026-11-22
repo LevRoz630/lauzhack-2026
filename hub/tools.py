@@ -33,6 +33,7 @@ def new_agent(busy: set[str], windows: dict[str, str]) -> str:
                   AGENT_POOL / "new-1")
     folder.mkdir(parents=True, exist_ok=True)
     install_hooks(folder)
+
     def ids() -> set[str]:      # window ids only: titles change while other sessions animate theirs
         return {line.split()[0] for line in subprocess.run(["wmctrl", "-l"], capture_output=True, text=True).stdout.splitlines() if line}
 

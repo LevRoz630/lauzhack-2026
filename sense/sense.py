@@ -26,6 +26,9 @@ from .owner import Owner
 
 HUB = "http://127.0.0.1:8770/ws"
 MODEL = Path(__file__).resolve().parent.parent / "models" / "face_landmarker.task"
+PAGES = Path.home() / "Pictures" / "pages"     # where page photos are kept
+LIVE = "/tmp/breakpoint_page_live.png"     # small local preview, shown by the overlay while a page is held up
+SHOT = "/tmp/breakpoint_page_shot.png"     # the photo just taken, shown by the overlay for a few seconds
 
 # thresholds
 YAW_AWAY = 25.0        # degrees from baseline
@@ -61,11 +64,6 @@ def open_camera() -> cv2.VideoCapture:
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     return cap
-
-
-PAGES = Path.home() / "Pictures" / "pages"
-LIVE = "/tmp/breakpoint_page_live.png"     # small local preview, shown by the overlay while a page is held up
-SHOT = "/tmp/breakpoint_page_shot.png"     # the photo just taken, shown by the overlay for a few seconds
 
 
 def take_still(cap: cv2.VideoCapture) -> tuple[str, cv2.VideoCapture]:

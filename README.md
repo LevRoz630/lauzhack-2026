@@ -30,12 +30,12 @@ Built at LauzHack 2026 (EPFL) on Logitech's prototype desk webcam and the MX Cre
 
 Linux with X11, Chrome, the webcam and the keypad.
 
-System packages: `xdotool wmctrl x11-utils alsa-utils gnome-terminal xclip python3-tk python3-gi python3-pil`.
+System packages: `xdotool wmctrl x11-utils alsa-utils gnome-terminal xclip python3-tk python3-gi python3-pil python3-aiohttp`.
 
 ```
 uv sync
 bash scripts/get_models.sh
-bash scripts/start.sh             # --lock: lock when away; --keep: keep the agents on the keys
+bash scripts/start.sh             # --lock: lock when away (Cinnamon); --keep: keep the agents on the keys
 bash scripts/demo_sessions.sh     # three demo Claude Code sessions
 bash scripts/stop.sh
 ```

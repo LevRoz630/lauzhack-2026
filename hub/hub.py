@@ -47,6 +47,12 @@ _idle_armed = True
 STATE_FILE = Path(__file__).resolve().parent.parent / ".hub_state.json"
 TIMELINE = Path(__file__).resolve().parent.parent / "logs" / "timeline.jsonl"
 _last_kind = ""
+last_press = 0.0         # when a keypad key was last pressed
+PRESS_PRESENT = 8.0      # seconds a keypad press counts as "I am here"
+last_app, last_launch = "", 0.0
+shot = {"path": "", "t": 0.0}            # the last page photo taken with the page key
+game = {"proc": None}                    # the break game, while it runs
+front = {"app": "home", "sid": None}
 
 
 def kind_of(state: str, reason: str) -> str:
@@ -71,7 +77,7 @@ def log_kind() -> None:
 
 
 async def timeline(req: web.Request) -> web.Response:
-    """Segments and totals for the last N minutes, for the live page."""
+    """Segments and totals for the last N minutes, for the diagnostics page."""
     minutes = float(req.query.get("minutes", "60"))
     now = time.time()
     start = now - minutes * 60
@@ -102,10 +108,6 @@ async def timeline(req: web.Request) -> web.Response:
                               "minutes": {k: round(v, 1) for k, v in totals.items()},
                               "longest_focus_min": round(best / 60, 1),
                               "distractions": sum(1 for sg in segs if sg["kind"] == "distracted")})
-
-
-last_press = 0.0         # when a keypad key was last pressed
-PRESS_PRESENT = 8.0      # seconds a keypad press counts as "I am here"
 
 
 def effective() -> tuple[str, str]:
@@ -281,7 +283,8 @@ async def hook(req: web.Request) -> web.Response:
         name, inp = d.get("tool_name", ""), d.get("tool_input") or {}
         t = risk.tier(name, inp)
         ask = risk.describe(name, inp)
-        s["doing"] = " ".join(os.path.basename(w) if w.startswith("/") else w for w in ask.split())[:60]      # file names, not full paths
+        # file names, not full paths
+        s["doing"] = " ".join(os.path.basename(w) if w.startswith("/") else w for w in ask.split())[:60]
         if t == risk.GREEN or req.query.get("observe"):      # an observed session is shown on the keys but never held
             s["state"] = "asking" if name == "AskUserQuestion" else "running"
             await broadcast()
@@ -356,12 +359,6 @@ def type_into_terminal(sid: str, text: str) -> bool:
     return True
 
 
-last_app, last_launch = "", 0.0
-shot = {"path": "", "t": 0.0}            # the last page photo taken with the page key
-game = {"proc": None}                    # the break game, while it runs
-front = {"app": "home", "sid": None}
-
-
 def game_running() -> bool:
     return game["proc"] is not None and game["proc"].poll() is None
 
@@ -388,7 +385,7 @@ def cycle_window(step: int) -> None:
     for line in out.splitlines():
         parts = line.split(None, 3)
         title = parts[3] if len(parts) > 3 else ""
-        if len(parts) < 3 or parts[1] == "-1" or title in ("Desktop",) or title.startswith("Keypad - "):
+        if len(parts) < 3 or parts[1] == "-1" or title == "Desktop" or title.startswith("Keypad - "):
             continue          # skip the desktop itself and the page that drives the keypad
         wins.append(int(parts[0], 16))
     if not wins:
@@ -597,7 +594,7 @@ async def ws_handler(req: web.Request) -> web.WebSocketResponse:
                 elif kind == "home":
                     await asyncio.get_running_loop().run_in_executor(None, go_home)
                 elif kind == "hide_agents":      # the home key: put the agents' terminals away too
-                    for sid, sess in sessions.items():
+                    for sess in sessions.values():
                         wid = windows.get(sess.get("cwd", "").rstrip("/"))
                         if wid:
                             subprocess.Popen(["xdotool", "windowminimize", str(int(wid, 16))],
@@ -717,7 +714,8 @@ def main() -> None:
         web.static("/vendor", VENDOR_JS),
     ])
     app.cleanup_ctx.append(ticker)
-    web.run_app(app, host="127.0.0.1", port=PORT, handler_cancellation=True, print=lambda *_: print(f"hub on http://127.0.0.1:{PORT}/"))
+    web.run_app(app, host="127.0.0.1", port=PORT, handler_cancellation=True,
+                print=lambda *_: print(f"hub on http://127.0.0.1:{PORT}/"))
 
 
 if __name__ == "__main__":

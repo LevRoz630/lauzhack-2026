@@ -3,15 +3,15 @@
 The audio never leaves this machine. Only the transcript is passed on to the agent.
 """
 import os
-import time
 import signal
 import subprocess
 import tempfile
 import threading
+import time
 
 import numpy as np
 
-MODEL = os.environ.get("STT_MODEL", "small.en")   # about 1.5 s per phrase on mains power; tiny.en is the fallback on battery
+MODEL = os.environ.get("STT_MODEL", "small.en")   # about 1.5 s per phrase on mains power; set STT_MODEL=tiny.en on battery
 RATE = 16000
 LIP_MOVE = float(os.environ.get("LIP_MOVE", "0.006"))   # mouth-opening variation that counts as speaking
 LIP_PAD = 0.35     # seconds kept either side of lip movement

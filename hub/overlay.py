@@ -86,7 +86,7 @@ def main(lock: bool = True) -> None:
         toast.geometry(f"{w}x{h}+{(root.winfo_screenwidth() - w) // 2}+{top}")
 
     toast_text = {"v": ""}
-    # the page key: what the camera sees during the countdown, then the photo it took, top right
+    # the page key: what the camera sees while a page is held up, then the photo it took, top right
     preview = tk.Toplevel(root)
     preview.overrideredirect(True)
     preview.attributes("-topmost", True)

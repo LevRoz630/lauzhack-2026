@@ -19,6 +19,9 @@ TITLE = ("You name a coding task for a tiny screen. Reply with only a label of a
          "lowercase, no punctuation, that tells this task apart from others.")
 WANT = ("A coding agent wants to run the tool call below. Say what it wants in at most five plain words, "
         "lowercase, no punctuation, starting with a verb. Reply with only those words.")
+OUTCOME = ("A coding agent has just finished a task. Given the task and its final message, say in one plain "
+           "complete sentence of at most 18 words what it did, what the result was, and anything the user "
+           "must do next. Do not start with \"the agent\". No preamble. Reply with only that sentence.")
 
 
 def load_env() -> None:
@@ -64,11 +67,6 @@ async def title(prompt: str) -> str:
 
 async def want(call: str) -> str:
     return await _ask(WANT, call, 5)
-
-
-OUTCOME = ("A coding agent has just finished a task. Given the task and its final message, say in one plain "
-           "complete sentence of at most 18 words what it did, what the result was, and anything the user must do next. Do not start with \"the agent\". "
-           "No preamble. Reply with only that sentence.")
 
 
 async def outcome(task: str, final: str) -> str:
